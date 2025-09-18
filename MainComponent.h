@@ -1,32 +1,58 @@
-#pragma once
+//============================== MainComponent.h ===========================
+// Spectra — Standalone host for PluginAudioProcessor/PluginEditor
+//
+// SPDX-License-Identifier: MIT
 
+#pragma once
 #include <JuceHeader.h>
 
-//==============================================================================
-/*
-    This component lives inside our window, and this is where you should put all
-    your controls and content.
-*/
-class MainComponent  : public juce::AudioAppComponent
+class PluginAudioProcessor;
+class PluginEditor;
+
+class MainComponent final : public juce::Component,
+                            private juce::Timer,
+                            private juce::Button::Listener,
+                            private juce::ChangeListener,
+                            private juce::KeyListener
 {
 public:
-    //==============================================================================
     MainComponent();
     ~MainComponent() override;
 
     //==============================================================================
-    void prepareToPlay (int samplesPerBlockExpected, double sampleRate) override;
-    void getNextAudioBlock (const juce::AudioSourceChannelInfo& bufferToFill) override;
-    void releaseResources() override;
-
-    //==============================================================================
-    void paint (juce::Graphics& g) override;
     void resized() override;
 
 private:
-    //==============================================================================
-    // Your private member variables go here...
+    // Callbacks
+    void buttonClicked(juce::Button* b) override;
+    void changeListenerCallback(juce::ChangeBroadcaster*) override;
+    bool keyPressed(const juce::KeyPress&, juce::Component*) override;
+    void timerCallback() override;
 
+    // Helpers
+    void openSettingsDialog();
+    void resetAudioToDefault();
+    void toggleAllMidiInputs();
+    void saveAudioState();
+    void saveMidiEnabledList();
+    void restoreOrEnableAllMidiInputs();
+    void reapplyMidiCallbacks();
+    void updateStatus();
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
+    static int commandBarHeight();
+
+    // Members
+    juce::AudioDeviceManager                    deviceManager;
+    juce::AudioProcessorPlayer                  player;
+    std::unique_ptr<PluginAudioProcessor>       processor;
+    std::unique_ptr<PluginEditor>               editor;
+
+    std::unique_ptr<juce::PropertiesFile>       props;
+
+    juce::TextButton                            btnSettings, btnReset, btnToggleMidi;
+    juce::Label                                 status;
+    std::unique_ptr<juce::DialogWindow>         settingsDialog;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };
+

@@ -1,263 +1,169 @@
-//============================== PluginProcessor.cpp ===========================
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include <cmath> // std::exp, std::pow
 
-using juce::AudioBuffer;
-using juce::MidiBuffer;
-using juce::ScopedNoDenormals;
+namespace {
+using APVTS = juce::AudioProcessorValueTreeState;
 
-//==============================================================================
-// Construction / Destruction
-//==============================================================================
+constexpr const char* kParamGain   = "gain";
+constexpr const char* kParamBypass = "bypass";
 
-PluginAudioProcessor::PluginAudioProcessor()
-    : juce::AudioProcessor (BusesProperties()
-#if ! JucePlugin_IsMidiEffect
- #if ! JucePlugin_IsSynth
-        .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
- #endif
-        .withOutput ("Output", juce::AudioChannelSet::stereo(), true)
-#endif
-    ),
-      apvts (*this, nullptr, "Params", createParameterLayout())
+static APVTS::ParameterLayout createLayout()
 {
+    std::vector<std::unique_ptr<juce::RangedAudioParameter>> p;
+
+    // Gain linéaire 0..1
+    p.push_back (std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID { kParamGain, 1 }, "Gain",
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.0001f, 1.0f),
+        0.5f));
+
+    // Bypass
+    p.push_back (std::make_unique<juce::AudioParameterBool>(
+        juce::ParameterID { kParamBypass, 1 }, "Bypass", false));
+
+    return { p.begin(), p.end() };
+}
+
+static float blockPeakAbs (const juce::AudioBuffer<float>& buf) noexcept
+{
+    const int chs = buf.getNumChannels();
+    const int n   = buf.getNumSamples();
+    float peak = 0.0f;
+    for (int c = 0; c < chs; ++c)
+        peak = juce::jmax (peak, buf.getMagnitude (c, 0, n));
+    return peak;
+}
+
+inline float expCoeffForTau (double fs, double tauSeconds)
+{
+    return (tauSeconds > 0.0) ? std::exp (-(1.0 / (fs * tauSeconds))) : 0.0f;
+}
+} // namespace
+
+//==================== PluginAudioProcessor ====================
+PluginAudioProcessor::PluginAudioProcessor()
+: juce::AudioProcessor (BusesProperties()
+    .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
+    .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
+  valueTreeState (*this, nullptr, "PARAMS", createLayout())
+{
+    // getRawParameterValue() -> std::atomic<float>*
+    gainParam   = valueTreeState.getRawParameterValue (kParamGain);
+    bypassParam = valueTreeState.getRawParameterValue (kParamBypass);
+
+    jassert (gainParam   != nullptr);
+    jassert (bypassParam != nullptr);
 }
 
 PluginAudioProcessor::~PluginAudioProcessor() = default;
 
-//==============================================================================
-// APVTS Layout
-//==============================================================================
-
-juce::AudioProcessorValueTreeState::ParameterLayout
-PluginAudioProcessor::createParameterLayout()
-{
-    using namespace juce;
-    std::vector<std::unique_ptr<RangedAudioParameter>> params;
-
-   #if JUCE_MAJOR_VERSION >= 8
-    auto range = NormalisableRange<float> (0.0f, 1.0f, 0.0001f);
-    auto fAttr = AudioParameterFloatAttributes{}
-                   .withStringFromValueFunction ([] (float v, int) { return String (v, 2); });
-
-    params.push_back (std::make_unique<AudioParameterFloat>(
-        ParameterID { "gain",   1 }, "Gain",   range, 0.5f, fAttr));
-    params.push_back (std::make_unique<AudioParameterBool >(
-        ParameterID { "bypass", 1 }, "Bypass", false));
-   #else
-    params.push_back (std::make_unique<AudioParameterFloat>(
-        "gain", "Gain", NormalisableRange<float> (0.0f, 1.0f, 0.0001f), 0.5f));
-    params.push_back (std::make_unique<AudioParameterBool>(
-        "bypass", "Bypass", false));
-   #endif
-
-    return { params.begin(), params.end() };
-}
-
-//==============================================================================
-// AudioProcessor overrides
-//==============================================================================
-
-const juce::String PluginAudioProcessor::getName() const { return JucePlugin_Name; }
-
-bool PluginAudioProcessor::acceptsMidi() const
-{
-   #if JucePlugin_WantsMidiInput
-    return true;
-   #else
-    return false;
-   #endif
-}
-bool PluginAudioProcessor::producesMidi() const
-{
-   #if JucePlugin_ProducesMidiOutput
-    return true;
-   #else
-    return false;
-   #endif
-}
-bool PluginAudioProcessor::isMidiEffect() const
-{
-   #if JucePlugin_IsMidiEffect
-    return true;
-   #else
-    return false;
-   #endif
-}
+const juce::String PluginAudioProcessor::getName() const { return "Roussov"; }
+bool   PluginAudioProcessor::acceptsMidi() const  { return false; }
+bool   PluginAudioProcessor::producesMidi() const { return false; }
+bool   PluginAudioProcessor::isMidiEffect() const { return false; }
 double PluginAudioProcessor::getTailLengthSeconds() const { return 0.0; }
 
-#ifndef JucePlugin_PreferredChannelConfigurations
-bool PluginAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
+int  PluginAudioProcessor::getNumPrograms() { return 1; }
+int  PluginAudioProcessor::getCurrentProgram() { return 0; }
+void PluginAudioProcessor::setCurrentProgram (int) {}
+const juce::String PluginAudioProcessor::getProgramName (int) { return {}; }
+void PluginAudioProcessor::changeProgramName (int, const juce::String&) {}
+
+void PluginAudioProcessor::prepareToPlay (double sampleRate, int /*samplesPerBlock*/)
 {
-   #if JucePlugin_IsMidiEffect
-    juce::ignoreUnused (layouts);
-    return true;
-   #else
-    const auto outSet = layouts.getMainOutputChannelSet();
-    if (outSet != juce::AudioChannelSet::mono()
-     && outSet != juce::AudioChannelSet::stereo())
-        return false;
+    fs = sampleRate;
 
-   #if ! JucePlugin_IsSynth
-    if (outSet != layouts.getMainInputChannelSet())
-        return false;
-   #endif
-    return true;
-   #endif
-}
-#endif
+    // Smoothed gain 10 ms
+    smoothedGain.reset (fs, 0.010);
+    smoothedGain.setCurrentAndTargetValue (gainParam ? gainParam->load() : 0.5f);
 
-void PluginAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
-{
-    juce::ignoreUnused (samplesPerBlock);
-    lastSampleRate = (float) sampleRate;
+    // Ballistics des meters
+    meterRiseCoeff = expCoeffForTau (fs, 0.010);
+    meterFallCoeff = expCoeffForTau (fs, 0.300);
 
-    // Lissages
-    gainSmoothed.reset (sampleRate, 0.005); // 5 ms
-    wetSmoothed .reset (sampleRate, 0.002); // 2 ms (bypass clickless)
-
-    const float g = apvts.getRawParameterValue ("gain")->load();
-    const bool  b = apvts.getRawParameterValue ("bypass")->load() > 0.5f;
-    gainSmoothed.setCurrentAndTargetValue (g);
-    wetSmoothed .setCurrentAndTargetValue (b ? 0.0f : 1.0f);
-
-    // Ballistique meters
-    meterAttack  = std::exp (-1.0 / (0.005 * sampleRate)); // 5 ms
-    meterRelease = std::exp (-1.0 / (0.200 * sampleRate)); // 200 ms
     meterIn  = 0.0f;
     meterOut = 0.0f;
-
-    inLevel.store  (0.0f, std::memory_order_relaxed);
-    outLevel.store (0.0f, std::memory_order_relaxed);
-
-    // Buffer dry pour crossfade
-    dryBuffer.setSize (juce::jmax (1, getTotalNumInputChannels()), samplesPerBlock);
 }
 
 void PluginAudioProcessor::releaseResources() {}
 
-void PluginAudioProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer& midi)
+#ifndef JucePlugin_PreferredChannelConfigurations
+bool PluginAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
-    ScopedNoDenormals noDenormals;
-    const int numSamples  = buffer.getNumSamples();
-    const int numInCh     = getTotalNumInputChannels();
-    const int numOutCh    = getTotalNumOutputChannels();
+    const auto& in  = layouts.getMainInputChannelSet();
+    const auto& out = layouts.getMainOutputChannelSet();
+    if (in.isDisabled() || out.isDisabled()) return false;
+    if (in != out) return false;
+    return in == juce::AudioChannelSet::mono() || in == juce::AudioChannelSet::stereo();
+}
+#endif
 
-    // Nettoie les sorties orphelines
-    for (int ch = numInCh; ch < numOutCh; ++ch)
-        buffer.clear (ch, 0, numSamples);
+void PluginAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
+{
+    juce::ScopedNoDenormals _;
+    midi.clear();
 
-    // Params
-    const float targetGain = apvts.getRawParameterValue ("gain")->load();
-    const bool  bypassNow  = apvts.getRawParameterValue ("bypass")->load() > 0.5f;
-    gainSmoothed.setTargetValue (targetGain);
-    wetSmoothed .setTargetValue (bypassNow ? 0.0f : 1.0f);
+    const int totalNumInputChannels  = getTotalNumInputChannels();
+    const int totalNumOutputChannels = getTotalNumOutputChannels();
+    for (int ch = totalNumInputChannels; ch < totalNumOutputChannels; ++ch)
+        buffer.clear (ch, 0, buffer.getNumSamples());
 
-    // Flash MIDI IN (sans boucle "break")
-    if (! midi.isEmpty())
-        midiInFlash.store (0.35f, std::memory_order_relaxed);
+    // Peak avant traitement
+    const float inPeak = blockPeakAbs (buffer);
 
-    // Sauvegarde dry
-    if (dryBuffer.getNumSamples() < numSamples || dryBuffer.getNumChannels() < numInCh)
-        dryBuffer.setSize (juce::jmax (1, numInCh), numSamples, false, false, true);
-    for (int ch = 0; ch < numInCh; ++ch)
-        dryBuffer.copyFrom (ch, 0, buffer, ch, 0, numSamples);
+    const bool isBypassed = (bypassParam && (bypassParam->load() >= 0.5f));
+    const int n  = buffer.getNumSamples();
+    const int ch = totalNumInputChannels;
 
-    // Peak entrée + ballistique
-    float inPk = 0.0f;
-    for (int ch = 0; ch < numInCh; ++ch)
-        inPk = juce::jmax (inPk, buffer.getMagnitude (ch, 0, numSamples));
+    if (!isBypassed)
     {
-        const float a = (inPk > meterIn ? (float) meterAttack : (float) meterRelease);
-        meterIn = a * meterIn + (1.0f - a) * inPk;
-        inLevel.store (juce::jlimit (0.0f, 1.0f, meterIn), std::memory_order_relaxed);
-    }
+        smoothedGain.setTargetValue (gainParam ? gainParam->load() : 0.5f);
 
-    // Traitement + crossfade wet
-    if (numInCh > 0)
-    {
-        auto* Ldry = dryBuffer.getReadPointer (0);
-        auto* L    = buffer.getWritePointer (0);
-        auto* Rdry = (numInCh > 1 ? dryBuffer.getReadPointer (1) : nullptr);
-        auto* R    = (numInCh > 1 ? buffer.getWritePointer  (1) : nullptr);
-
-        for (int i = 0; i < numSamples; ++i)
+        for (int s = 0; s < n; ++s)
         {
-            const float g = gainSmoothed.getNextValue();
-            const float w = wetSmoothed .getNextValue(); // 0..1
-
-            const float wetL = Ldry[i] * g;
-            L[i] = Ldry[i] * (1.0f - w) + wetL * w;
-
-            if (R)
-            {
-                const float wetR = Rdry[i] * g;
-                R[i] = Rdry[i] * (1.0f - w) + wetR * w;
-            }
+            const float g = smoothedGain.getNextValue();
+            for (int c = 0; c < ch; ++c)
+                buffer.getWritePointer (c)[s] *= g;
         }
     }
 
-    // Peak sortie + ballistique
-    float outPk = 0.0f;
-    for (int ch = 0; ch < numOutCh; ++ch)
-        outPk = juce::jmax (outPk, buffer.getMagnitude (ch, 0, numSamples));
+    // Peak après traitement
+    const float outPeak = blockPeakAbs (buffer);
+
+    // Meters (approx per-block)
+    auto smoothPeak = [] (float prev, float x, float aRise, float aFall) -> float
     {
-        const float a = (outPk > meterOut ? (float) meterAttack : (float) meterRelease);
-        meterOut = a * meterOut + (1.0f - a) * outPk;
-        outLevel.store (juce::jlimit (0.0f, 1.0f, meterOut), std::memory_order_relaxed);
-    }
+        const float a = (x > prev) ? aRise : aFall;
+        return a * prev + (1.0f - a) * x;
+    };
 
-   #if JucePlugin_ProducesMidiOutput
-    if (midi.getNumEvents() > 0)
-        midiOutFlash.store (0.35f, std::memory_order_relaxed);
-   #else
-    juce::ignoreUnused (midiOutFlash);
-   #endif
+    const float aRiseBlock = std::pow (meterRiseCoeff, (float) n);
+    const float aFallBlock = std::pow (meterFallCoeff, (float) n);
+
+    meterIn.store  (smoothPeak (meterIn.load(),  juce::jlimit (0.0f, 1.0f, inPeak),  aRiseBlock, aFallBlock),
+                    std::memory_order_relaxed);
+    meterOut.store (smoothPeak (meterOut.load(), juce::jlimit (0.0f, 1.0f, outPeak), aRiseBlock, aFallBlock),
+                    std::memory_order_relaxed);
 }
 
-//==============================================================================
-// Editor
-//==============================================================================
-
-juce::AudioProcessorEditor* PluginAudioProcessor::createEditor()
-{
-    return new PluginEditor (*this);
-}
-
-//==============================================================================
-// State save/load
-//==============================================================================
+bool PluginAudioProcessor::hasEditor() const { return true; }
+juce::AudioProcessorEditor* PluginAudioProcessor::createEditor() { return new PluginEditor (*this); }
 
 void PluginAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    auto state = apvts.copyState();
-    state.setProperty ("stateVersion", 1, nullptr);
-
-    if (auto xml = state.createXml())
-        copyXmlToBinary (*xml, destData);
+    auto state = valueTreeState.copyState();
+    juce::MemoryOutputStream mos (destData, true);
+    state.writeToStream (mos);
 }
 
 void PluginAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
-    if (auto xml = getXmlFromBinary (data, sizeInBytes))
-    {
-        const juce::ValueTree vt = juce::ValueTree::fromXml (*xml);
-        if (vt.isValid() && vt.hasType (apvts.state.getType()))
-        {
-            apvts.replaceState (vt);
-
-            const float g = apvts.getRawParameterValue ("gain")->load();
-            const bool  b = apvts.getRawParameterValue ("bypass")->load() > 0.5f;
-            gainSmoothed.setCurrentAndTargetValue (g);
-            wetSmoothed .setCurrentAndTargetValue (b ? 0.0f : 1.0f);
-        }
-    }
+    if (auto vt = juce::ValueTree::readFromData (data, (size_t) sizeInBytes); vt.isValid())
+        valueTreeState.replaceState (vt);
 }
 
-//==============================================================================
-// Factory
-//==============================================================================
-
+//==================== Entrée plugin requise par JUCE ====================
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
     return new PluginAudioProcessor();

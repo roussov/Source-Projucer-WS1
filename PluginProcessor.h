@@ -1,81 +1,75 @@
 #pragma once
-
-#include <juce_audio_processors/juce_audio_processors.h>
-#include <juce_dsp/juce_dsp.h>
+#include <JuceHeader.h>
 #include <atomic>
 
-class PluginAudioProcessor final : public juce::AudioProcessor
+class PluginEditor;
+
+class PluginAudioProcessor : public juce::AudioProcessor
 {
 public:
-    PluginAudioProcessor();
-    ~PluginAudioProcessor() override; // pas de "= default" ici
+    using APVTS = juce::AudioProcessorValueTreeState;
 
-    // Identité
+    PluginAudioProcessor();
+    ~PluginAudioProcessor() override;
+
+    //== AudioProcessor overrides ==
     const juce::String getName() const override;
     bool acceptsMidi() const override;
     bool producesMidi() const override;
     bool isMidiEffect() const override;
     double getTailLengthSeconds() const override;
 
-    // Programmes (implémentés pour éviter "abstract")
-    int getNumPrograms() override               { return 1; }
-    int getCurrentProgram() override            { return 0; }
-    void setCurrentProgram (int) override       {}
-    const juce::String getProgramName (int) override { return {}; }
-    void changeProgramName (int, const juce::String&) override {}
+    int  getNumPrograms() override;
+    int  getCurrentProgram() override;
+    void setCurrentProgram (int index) override;
+    const juce::String getProgramName (int index) override;
+    void changeProgramName (int index, const juce::String& newName) override;
 
-    // Audio
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override;
 
-   #ifndef JucePlugin_PreferredChannelConfigurations
+#ifndef JucePlugin_PreferredChannelConfigurations
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
-   #endif
+#endif
 
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
-    using juce::AudioProcessor::processBlock; // pour double précision si besoin
 
-    // Editor
-    bool hasEditor() const override { return true; }
+    //== Editor ==
+    bool hasEditor() const override;
     juce::AudioProcessorEditor* createEditor() override;
 
-    // State
+    //== State ==
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
-    // Accès aux paramètres pour l’Editor
-    juce::AudioProcessorValueTreeState&       getValueTreeState()       noexcept { return apvts; }
-    const juce::AudioProcessorValueTreeState& getValueTreeState() const noexcept { return apvts; }
+    //== Params / State access ==
+    APVTS& getValueTreeState() noexcept { return valueTreeState; }
+
+    // Meters lus par l’éditeur (poll depuis Timer)
+    float getInputMeter()  const noexcept { return meterIn.load (std::memory_order_relaxed); }
+    float getOutputMeter() const noexcept { return meterOut.load(std::memory_order_relaxed); }
 
 private:
-    // Paramètres
-    juce::AudioProcessorValueTreeState apvts;
-    juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+    // Param layout
+    static APVTS::ParameterLayout createParameterLayout();
 
-    // DSP (SmoothedValue est dans juce directement, pas juce::dsp)
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> gainSmoothed;
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> wetSmoothed;
-    float lastSampleRate { 44100.0f };
+    // Params
+    APVTS valueTreeState;
 
-    // Ballistique meters
-    float  meterIn  { 0.0f };
-    float  meterOut { 0.0f };
-    double meterAttack  { 0.0 };
-    double meterRelease { 0.0 };
+    // getRawParameterValue() renvoie std::atomic<float>* — on stocke des pointeurs.
+    std::atomic<float>* gainParam   { nullptr }; // 0..1
+    std::atomic<float>* bypassParam { nullptr }; // 0/1
 
-    // Niveaux thread-safe pour l’UI
-    std::atomic<float> inLevel  { 0.0f };
-    std::atomic<float> outLevel { 0.0f };
+    // DSP — NB: le 2e paramètre est juce::ValueSmoothingTypes (namespace global juce)
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedGain;
 
-    // Flash MIDI
-    std::atomic<float> midiInFlash  { 0.0f };
-    std::atomic<float> midiOutFlash { 0.0f };
+    std::atomic<float> meterIn  { 0.0f }; // 0..1
+    std::atomic<float> meterOut { 0.0f }; // 0..1
+    double fs { 44100.0 };
 
-    // Buffer dry pour crossfade (bypass clickless)
-    juce::AudioBuffer<float> dryBuffer;
+    // Ballistics (calculés dans prepareToPlay)
+    float meterRiseCoeff { 0.0f }; // montée rapide
+    float meterFallCoeff { 0.0f }; // descente lente
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PluginAudioProcessor)
 };
-
-// Factory
-juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter();

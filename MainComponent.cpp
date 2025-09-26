@@ -1,5 +1,5 @@
 //============================== MainComponent.cpp ===========================
-// Standalone host pro pour PluginAudioProcessor/PluginEditor
+// Spectra — Standalone host for PluginAudioProcessor/PluginEditor
 // SPDX-License-Identifier: MIT
 
 #include "MainComponent.h"
@@ -8,253 +8,301 @@
 #include <JuceHeader.h>
 
 namespace {
-#if JUCE_MAC
-constexpr bool kIsMac = true;
-#else
-constexpr bool kIsMac = false;
-#endif
+constexpr const char* kAppVendor   = "SpectraAudio";
+constexpr const char* kAppName     = "SpectraStandalone";
+constexpr const char* kKeyAudioXML = "audioDeviceXML";
+constexpr const char* kKeyMidiList = "midiEnabled"; // CSV by device identifier
 
-inline bool isAccelDown (const juce::KeyPress& key) noexcept
+static std::unique_ptr<juce::PropertiesFile> createLocalProps()
 {
-    return kIsMac ? key.getModifiers().isCommandDown()
-                  : key.getModifiers().isCtrlDown();
-}
+    juce::PropertiesFile::Options o;
+    o.applicationName     = kAppName;
+    o.filenameSuffix      = ".properties";
+    o.osxLibrarySubFolder = "Application Support/" + juce::String(kAppVendor);
+    o.commonToAllUsers    = false;
+    o.storageFormat       = juce::PropertiesFile::storeAsXML;
+    o.millisecondsBeforeSaving = 200;
 
-juce::File audioStateFile()
-{
-    auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
-                   .getChildFile ("RoussovHost");
+    auto dir = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                 .getChildFile(kAppVendor).getChildFile(kAppName);
     dir.createDirectory();
-    return dir.getChildFile ("audio_state.xml");
+    o.folderName = dir.getFullPathName();
+    return std::make_unique<juce::PropertiesFile>(o);
 }
 } // namespace
 
-//============================== MainComponent ===============================
+//==============================================================================
+// Construction / Destruction
+//==============================================================================
 MainComponent::MainComponent()
 {
-    // Processor + player
+    props = createLocalProps();
+
+    // Restaure AudioDeviceManager
+    std::unique_ptr<juce::XmlElement> saved;
+    if (auto s = props->getValue(kKeyAudioXML); s.isNotEmpty())
+        saved = juce::XmlDocument::parse(s);
+
+    deviceManager.initialise(2, 2, saved.get(), true, juce::String(), nullptr);
+    deviceManager.addChangeListener(this);
+
+    // Branche le processor + audio callback
     processor = std::make_unique<PluginAudioProcessor>();
-    player.setProcessor (processor.get());
+    player.setProcessor(processor.get());
+    deviceManager.addAudioCallback(&player);
 
-    // Audio init (2 in / 2 out). Charge l’état s’il existe.
-    {
-        juce::XmlDocument doc (audioStateFile());
-        std::unique_ptr<juce::XmlElement> state = doc.getDocumentElement();
-        if (state && state->hasTagName ("AUDIOSC"))
-            deviceManager.initialise (2, 2, state.get(), true);
-        else
-            deviceManager.initialise (2, 2, nullptr, true);
-    }
+    // MIDI
+    restoreOrEnableAllMidiInputs();
 
-    deviceManager.addAudioCallback (&player);
-    deviceManager.addChangeListener (this);
+    // UI
+    editor = std::make_unique<PluginEditor>(*processor);
+    addAndMakeVisible(editor.get());
 
-    // Editor
-    editor.reset (processor->createEditor());
-    jassert (editor != nullptr);
-    addAndMakeVisible (editor.get());
+    btnSettings.setButtonText("Audio/MIDI…");
+    btnSettings.setTooltip("Ouvrir les réglages Audio/MIDI (⌘,)");
+    btnSettings.addListener(this);
+    addAndMakeVisible(btnSettings);
 
-    // UI: barre de statut
-    addAndMakeVisible (status);
-    status.setJustificationType (juce::Justification::centredLeft);
-    status.setFont (juce::Font (juce::FontOptions (12.0f)));
+    btnReset.setButtonText("Reset Audio");
+    btnReset.setTooltip("Réinitialiser la configuration audio (⌘R)");
+    btnReset.addListener(this);
+    addAndMakeVisible(btnReset);
 
-    // Taille initiale
-    const int pad = 16;
-    setSize (juce::jlimit (360, 1600, editor->getWidth()  + pad * 2),
-             juce::jlimit (260, 1000, editor->getHeight() + pad * 2 + 28));
+    btnToggleMidi.setButtonText("MIDI All On/Off");
+    btnToggleMidi.setTooltip("Activer/Désactiver tous les MIDI IN (⌘M)");
+    btnToggleMidi.addListener(this);
+    addAndMakeVisible(btnToggleMidi);
 
-    addKeyListener (this);
-    setWantsKeyboardFocus (true);
-    startTimerHz (4); // status/CPU poll
-    refreshStatus();
+    status.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(status);
+
+    const int w = juce::jmax(480, editor->getWidth());
+    const int h = juce::jmax(320, editor->getHeight()) + commandBarHeight();
+    setSize(w, h);
+
+    addKeyListener(this);
+    startTimerHz(15);
+    updateStatus();
 }
 
 MainComponent::~MainComponent()
 {
     stopTimer();
-    removeKeyListener (this);
-    deviceManager.removeChangeListener (this);
+    saveAudioState();
+    saveMidiEnabledList();
 
-    // Sauvegarde de l’état audio
-    if (auto xml = deviceManager.createStateXml())
-        xml->writeTo (audioStateFile());
+    deviceManager.removeChangeListener(this);
 
-    editor = nullptr;                 // détruire l’editor avant le processor
-    deviceManager.removeAudioCallback (&player);
-    player.setProcessor (nullptr);
-    processor = nullptr;
+    for (auto& d : juce::MidiInput::getAvailableDevices())
+        deviceManager.removeMidiInputDeviceCallback(d.identifier, &player.getMidiMessageCollector());
+
+    deviceManager.removeAudioCallback(&player);
+    player.setProcessor(nullptr);
+
+    if (settingsDialog) settingsDialog->setVisible(false);
+    settingsDialog.reset();
+    editor.reset();
+    processor.reset();
+    props.reset();
 }
 
-//================== Component ==================
-void MainComponent::paint (juce::Graphics& g)
-{
-    auto b = getLocalBounds().toFloat();
-    g.setGradientFill (juce::ColourGradient(
-        juce::Colour::fromFloatRGBA (0.06f, 0.06f, 0.07f, 1.0f), b.getX(), b.getY(),
-        juce::Colour::fromFloatRGBA (0.03f, 0.03f, 0.04f, 1.0f), b.getX(), b.getBottom(), false));
-    g.fillRect (b);
-}
-
+//==============================================================================
+// Layout
+//==============================================================================
 void MainComponent::resized()
 {
     auto r = getLocalBounds();
-    auto sb = r.removeFromBottom (24);
-    status.setBounds (sb.reduced (8, 2));
+    auto top = r.removeFromTop(commandBarHeight()).reduced(8, 6);
 
-    if (editor != nullptr)
-    {
-        auto avail = r.reduced (12);
-        auto edW = editor->getWidth();
-        auto edH = editor->getHeight();
+    btnSettings.setBounds(top.removeFromLeft(180));
+    btnReset.setBounds(top.removeFromLeft(140));
+    btnToggleMidi.setBounds(top.removeFromLeft(160));
+    status.setBounds(top.reduced(8, 0));
 
-        edW = juce::jmin (edW, avail.getWidth());
-        edH = juce::jmin (edH, avail.getHeight());
-
-        juce::Rectangle<int> ed (0, 0, edW, edH);
-        ed.setCentre (avail.getCentre());
-        editor->setBounds (ed);
-    }
+    if (editor) editor->setBounds(r);
 }
 
-//================== Raccourcis =================
-bool MainComponent::keyPressed (const juce::KeyPress& key, juce::Component*)
+//==============================================================================
+// Callbacks UI / système
+//==============================================================================
+void MainComponent::buttonClicked(juce::Button* b)
 {
-    // Réglages audio (⌘, ou Ctrl+,)
-    if (isAccelDown (key) && key.getTextCharacter() == ',')
-    { openAudioSettings(); return true; }
+    if (b == &btnSettings) openSettingsDialog();
+    else if (b == &btnReset) resetAudioToDefault();
+    else if (b == &btnToggleMidi) toggleAllMidiInputs();
+}
 
-    // Reset audio (⌘R / Ctrl+R ou F5)
-    if (isAccelDown (key) && (key.getTextCharacter() == 'r' || key.getKeyCode() == juce::KeyPress::F5Key))
-    { resetAudio(); return true; }
+void MainComponent::changeListenerCallback(juce::ChangeBroadcaster*)
+{
+    updateStatus();
+    saveAudioState();
+    reapplyMidiCallbacks();
+}
 
-    // Toggle bypass (⌘B / Ctrl+B)
-    if (isAccelDown (key) && (key.getTextCharacter() == 'b'))
-    { toggleBypass(); return true; }
+bool MainComponent::keyPressed(const juce::KeyPress& k, juce::Component*)
+{
+   #if JUCE_MAC
+    const bool cmd = k.getModifiers().isCommandDown();
+   #else
+    const bool cmd = k.getModifiers().isCtrlDown();
+   #endif
 
-    // Gain = 0.5 (⌘0 / Ctrl+0)
-    if (isAccelDown (key) && (key.getTextCharacter() == '0'))
-    { setGain (0.5f); return true; }
-
-    // Gain +0.02  (gère '+' ou '=' selon layout)
-    const juce::juce_wchar c = key.getTextCharacter();
-    if (c == '+' || c == '=')
-    { nudgeGain (+0.02f); return true; }
-
-    // Gain -0.02
-    if (c == '-')
-    { nudgeGain (-0.02f); return true; }
-
-    // À propos (⌘I / Ctrl+I)
-    if (isAccelDown (key) && (c == 'i'))
-    { showAbout(); return true; }
+    if (cmd && k.getKeyCode() == ',') { openSettingsDialog(); return true; }
+    if (cmd && (k.getTextCharacter() == 'r' || k.getKeyCode() == juce::KeyPress::F5Key))
+    { resetAudioToDefault(); return true; }
+    if (cmd && (k.getTextCharacter() == 'm'))
+    { toggleAllMidiInputs(); return true; }
 
     return false;
 }
 
-//================== Timer/Change =================
-void MainComponent::timerCallback() { refreshStatus(); }
-void MainComponent::changeListenerCallback (juce::ChangeBroadcaster*) { refreshStatus(); }
-
-//================== Ops ==========================
-void MainComponent::openAudioSettings()
+void MainComponent::timerCallback()
 {
-    auto* comp = new juce::AudioDeviceSelectorComponent (
-        deviceManager,
-        0, 256,   // min/max entrées
-        0, 256,   // min/max sorties
-        false, false, true, false);
+    if (editor)
+    {
+        const int ew = editor->getWidth();
+        const int eh = editor->getHeight() + commandBarHeight();
+        if (ew != getWidth() || eh != getHeight())
+            setSize(juce::jmax(480, ew), juce::jmax(320, eh));
+    }
+    updateStatus();
+}
 
-    comp->setSize (560, 440);
+//==============================================================================
+// Helpers
+//==============================================================================
+int MainComponent::commandBarHeight() { return 44; }
+
+void MainComponent::openSettingsDialog()
+{
+    if (settingsDialog) { settingsDialog->toFront(true); return; }
+
+    auto* selector = new juce::AudioDeviceSelectorComponent(
+        deviceManager, 0, 2, 0, 2,
+        true, true, false, true
+    );
+    selector->setSize(520, 420);
 
     juce::DialogWindow::LaunchOptions o;
-    o.content.setOwned (comp);
-    o.escapeKeyTriggersCloseButton = true;
-    o.useNativeTitleBar = true;
-    o.resizable = true;
-    o.dialogTitle = "Réglages audio";
-    o.componentToCentreAround = this;
+    o.dialogTitle                   = "Réglages Audio/MIDI";
+    o.content.setOwned(selector);
+    o.componentToCentreAround       = this;
+    o.dialogBackgroundColour        = juce::Colours::black.withAlpha(0.85f);
+    o.escapeKeyTriggersCloseButton  = true;
+    o.useNativeTitleBar             = true;
+    o.resizable                     = true;
+    o.useBottomRightCornerResizer   = true;
 
-    // API moderne: non bloquant
-    o.launchAsync();
-
-    // Sauvegarde immédiate (si l’utilisateur a modifié)
-    if (auto xml = deviceManager.createStateXml())
-        xml->writeTo (audioStateFile());
-
-    refreshStatus();
+    settingsDialog.reset(o.launchAsync());
 }
 
-void MainComponent::resetAudio()
+void MainComponent::resetAudioToDefault()
 {
     deviceManager.closeAudioDevice();
-    if (auto* devType = deviceManager.getCurrentDeviceTypeObject())
+    deviceManager.initialise(2, 2, nullptr, true, juce::String(), nullptr);
+    reapplyMidiCallbacks();
+    updateStatus();
+}
+
+void MainComponent::saveAudioState()
+{
+    if (!props) return;
+    if (auto xml = deviceManager.createStateXml())
     {
-        juce::AudioDeviceManager::AudioDeviceSetup setup;
-        deviceManager.getAudioDeviceSetup (setup);
-        deviceManager.setAudioDeviceSetup (setup, true);
+        props->setValue(kKeyAudioXML, xml->toString());
+        props->saveIfNeeded();
     }
-    deviceManager.restartLastAudioDevice();
-    refreshStatus();
 }
 
-void MainComponent::toggleBypass()
+void MainComponent::saveMidiEnabledList()
 {
-    auto& vts = processor->getValueTreeState();
-    if (auto* p = dynamic_cast<juce::AudioParameterBool*>(vts.getParameter ("bypass")))
-        *p = ! *p;
+    if (!props) return;
+    juce::StringArray enabled;
+    for (auto& d : juce::MidiInput::getAvailableDevices())
+        if (deviceManager.isMidiInputDeviceEnabled(d.identifier))
+            enabled.add(d.identifier);
+    props->setValue(kKeyMidiList, enabled.joinIntoString(","));
+    props->saveIfNeeded();
 }
 
-void MainComponent::setGain (float g)
+void MainComponent::restoreOrEnableAllMidiInputs()
 {
-    auto& vts = processor->getValueTreeState();
-    if (auto* p = dynamic_cast<juce::AudioParameterFloat*>(vts.getParameter ("gain")))
-        *p = juce::jlimit (0.0f, 1.0f, g);
-}
+    auto csv = props ? props->getValue(kKeyMidiList) : juce::String();
+    auto all = juce::MidiInput::getAvailableDevices();
 
-void MainComponent::nudgeGain (float delta)
-{
-    auto& vts = processor->getValueTreeState();
-    if (auto* p = dynamic_cast<juce::AudioParameterFloat*>(vts.getParameter ("gain")))
-        *p = juce::jlimit (0.0f, 1.0f, (float)*p + delta);
-}
-
-void MainComponent::refreshStatus()
-{
-    juce::String txt;
-
-    if (auto* d = deviceManager.getCurrentAudioDevice())
+    if (csv.isNotEmpty())
     {
-        const auto sr = d->getCurrentSampleRate();
-        const auto bs = d->getCurrentBufferSizeSamples();
-        const auto in = d->getActiveInputChannels().countNumberOfSetBits();
-        const auto ou = d->getActiveOutputChannels().countNumberOfSetBits();
-        const auto xr = d->getXRunCount();
-
-        txt << "Device: " << d->getName()
-            << "   " << (int)sr << " Hz"
-            << "   " << bs << " smp"
-            << "   I/O " << in << "/" << ou
-            << "   CPU " << juce::String (deviceManager.getCpuUsage() * 100.0, 1) << "%";
-        if (xr >= 0) txt << "   XRuns " << xr;
+        juce::StringArray want; want.addTokens(csv, ",", "\"");
+        for (auto& d : all)
+        {
+            const bool en = want.contains(d.identifier, true);
+            deviceManager.setMidiInputDeviceEnabled(d.identifier, en);
+            deviceManager.removeMidiInputDeviceCallback(d.identifier, &player.getMidiMessageCollector());
+            if (en)
+                deviceManager.addMidiInputDeviceCallback(d.identifier, &player.getMidiMessageCollector());
+        }
     }
     else
     {
-        txt = "Aucun périphérique audio";
+        for (auto& d : all)
+        {
+            deviceManager.setMidiInputDeviceEnabled(d.identifier, true);
+            deviceManager.addMidiInputDeviceCallback(d.identifier, &player.getMidiMessageCollector());
+        }
+        saveMidiEnabledList();
     }
-
-    status.setText (txt, juce::dontSendNotification);
-    // Clamp l’editor si la fenêtre change (DPI, etc.)
-    resized();
 }
 
-void MainComponent::showAbout()
+void MainComponent::reapplyMidiCallbacks()
 {
-    juce::AlertWindow::showMessageBoxAsync (
-        juce::AlertWindow::InfoIcon,
-        "À propos",
-        "Roussov Standalone Host\n"
-        "Plugin: Roussov (gain, bypass)\n"
-        "Raccourcis: ⌘, | ⌘R | ⌘B | ⌘0 | +/-",
-        "OK");
+    for (auto& d : juce::MidiInput::getAvailableDevices())
+        deviceManager.removeMidiInputDeviceCallback(d.identifier, &player.getMidiMessageCollector());
+
+    for (auto& d : juce::MidiInput::getAvailableDevices())
+        if (deviceManager.isMidiInputDeviceEnabled(d.identifier))
+            deviceManager.addMidiInputDeviceCallback(d.identifier, &player.getMidiMessageCollector());
+}
+
+void MainComponent::toggleAllMidiInputs()
+{
+    auto devices = juce::MidiInput::getAvailableDevices();
+    bool anyDisabled = false;
+    for (auto& d : devices)
+        if (!deviceManager.isMidiInputDeviceEnabled(d.identifier)) { anyDisabled = true; break; }
+
+    for (auto& d : devices)
+    {
+        deviceManager.setMidiInputDeviceEnabled(d.identifier, anyDisabled);
+        deviceManager.removeMidiInputDeviceCallback(d.identifier, &player.getMidiMessageCollector());
+        if (anyDisabled)
+            deviceManager.addMidiInputDeviceCallback(d.identifier, &player.getMidiMessageCollector());
+    }
+    saveMidiEnabledList();
+    updateStatus();
+}
+
+void MainComponent::updateStatus()
+{
+    juce::String s;
+    if (auto* dev = deviceManager.getCurrentAudioDevice())
+    {
+        const auto nm  = dev->getName();
+        const auto sr  = dev->getCurrentSampleRate();
+        const auto bs  = dev->getCurrentBufferSizeSamples();
+        const auto inC = dev->getActiveInputChannels().countNumberOfSetBits();
+        const auto ouC = dev->getActiveOutputChannels().countNumberOfSetBits();
+
+        int midiOn = 0;
+        for (auto& d : juce::MidiInput::getAvailableDevices())
+            if (deviceManager.isMidiInputDeviceEnabled(d.identifier)) ++midiOn;
+
+        s << "Device: " << nm
+          << "   SR: " << juce::String(sr, 0) << " Hz"
+          << "   Buffer: " << bs << " samples"
+          << "   I/O: " << inC << "/" << ouC
+          << "   MIDI IN: " << midiOn;
+    }
+    else s = "Aucun périphérique audio actif";
+
+    status.setText(s, juce::dontSendNotification);
 }

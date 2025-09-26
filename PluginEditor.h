@@ -1,82 +1,72 @@
+//============================== PluginEditor.h ================================
 #pragma once
 
-#include <JuceHeader.h>
+#include <juce_gui_basics/juce_gui_basics.h>
+#include <juce_gui_extra/juce_gui_extra.h>
+#include <juce_audio_processors/juce_audio_processors.h>
 #include <atomic>
 
-class PluginAudioProcessor;
+class PluginAudioProcessor; // défini dans PluginProcessor.h
 
-//==================== RoussovLookAndFeel ====================
-class RoussovLookAndFeel : public juce::LookAndFeel_V4
+using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
+
+// ─────────────────── Look & Feel ───────────────────
+class RoussovLookAndFeel final : public juce::LookAndFeel_V4
 {
 public:
     RoussovLookAndFeel();
-    void drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h,
+    void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h,
                            float sliderPosProportional, float rotaryStartAngle, float rotaryEndAngle,
-                           juce::Slider& slider) override;
+                           juce::Slider&) override;
+
 private:
     juce::Image knobNoise;
 };
 
-//==================== ActivityLED (utilitaire générique) ====================
-class ActivityLED : public juce::Component
+// ─────────────────── Mini Vu-Mètre ───────────────────
+class TinyBarMeter final : public juce::Component
 {
 public:
-    void setBrightness (float a) { brightness = a; repaint(); }
-    void trigger (float a)       { brightness = a; repaint(); }
-    void paint (juce::Graphics& g) override;
+    void paint (juce::Graphics&) override;
+    void setLevel (float v) { level = juce::jlimit (0.0f, 1.0f, v); repaint(); }
 
 private:
-    float brightness { 0.0f };
+    float level { 0.0f }; // 0..1
 };
 
-//==================== TinyBarMeter ====================
-class TinyBarMeter : public juce::Component
+// ─────────────────── PluginEditor ───────────────────
+class PluginEditor final : public juce::AudioProcessorEditor,
+                           private juce::Timer
 {
 public:
-    void setLevel (float v) { level = v; repaint(); }
-    void paint (juce::Graphics& g) override;
-
-private:
-    float level { 0.0f }; // lin 0..1
-};
-
-//==================== PluginEditor ====================
-class PluginEditor : public juce::AudioProcessorEditor,
-                     private juce::Timer
-{
-public:
-    explicit PluginEditor (PluginAudioProcessor& p);
+    explicit PluginEditor (PluginAudioProcessor&);
     ~PluginEditor() override;
 
-    void paint (juce::Graphics& g) override;
+    void paint (juce::Graphics&) override;
     void resized() override;
 
-    // Meters feed (thread-safe)
+    // API thread-safe (le Processor peut appeler ces setters)
     void setInputLevel  (float linear01);
     void setOutputLevel (float linear01);
+
+    // Stubs pour compat éventuelle (MIDI activity flash)
+    void notifyMidiIn  (float) {}
+    void notifyMidiOut (float) {}
 
 private:
     void timerCallback() override;
 
-    using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
-
     PluginAudioProcessor& processor;
-
-    RoussovLookAndFeel lnf;
+    RoussovLookAndFeel   lnf;
 
     // UI
-    juce::Label  titleLabel, subtitleLabel;
+    juce::Label  titleLabel, subtitleLabel, valueLabel, inLabel, outLabel;
     juce::Slider volumeDial;
-    juce::Label  valueLabel;
-
-    juce::Label     inLabel, outLabel;
-    TinyBarMeter    inMeter, outMeter;
-
     std::unique_ptr<SliderAttachment> volumeAttachment;
+    TinyBarMeter inMeter, outMeter;
 
-    // Meter state
-    std::atomic<float> inLin  { 0.0f };
-    std::atomic<float> outLin { 0.0f };
+    // niveaux affichés (thread-safe)
+    std::atomic<float> inLin { 0.0f }, outLin { 0.0f };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PluginEditor)
 };

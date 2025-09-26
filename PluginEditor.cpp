@@ -23,49 +23,42 @@ void RoussovLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int 
 {
     g.saveState();
 
-    const auto bounds = juce::Rectangle<int>(x, y, w, h).toFloat().reduced (4.0f);
-    const auto centre = bounds.getCentre();
-    const float rOuter = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
-    const float rInner = rOuter * 0.64f;
-    const float rRing  = rOuter * 0.88f;
-    const float angle  = startAngle + pos * (endAngle - startAngle);
+    auto bounds = juce::Rectangle<int>(x, y, w, h).toFloat().reduced (4.0f);
+    auto centre = bounds.getCentre();
+    float rOuter = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
+    float rInner = rOuter * 0.64f;
+    float rRing  = rOuter * 0.88f;
+    float angle  = startAngle + pos * (endAngle - startAngle);
 
-    // Ombre douce
     g.setColour (juce::Colours::black.withAlpha (0.35f));
     g.fillEllipse (bounds.translated (0, 1.5f));
 
-    // Corps du knob
-    const auto bodyTop = juce::Colour::fromRGB (22, 24, 26);
-    const auto bodyBot = juce::Colour::fromRGB (10, 11, 12);
+    auto bodyTop = juce::Colour::fromRGB (22, 24, 26);
+    auto bodyBot = juce::Colour::fromRGB (10, 11, 12);
     g.setGradientFill (juce::ColourGradient (bodyTop, bounds.getX(), bounds.getY(),
                                              bodyBot, bounds.getX(), bounds.getBottom(), false));
     g.fillEllipse (bounds);
 
-    // Texture discrète
     g.setTiledImageFill (knobNoise, (int)bounds.getX(), (int)bounds.getY(), 0.08f);
     g.fillEllipse (bounds);
 
-    // Chanfrein extérieur
     g.setColour (juce::Colours::white.withAlpha (0.08f));
     g.drawEllipse (bounds.reduced (0.5f), 1.0f);
 
-    // Lueur interne pilotée par pos
-    const float glowAmt = juce::jlimit (0.0f, 1.0f, 0.18f + 0.85f * pos);
-    const auto  innerHi = juce::Colours::white.withAlpha (0.12f + 0.30f * glowAmt);
-    const auto  innerLo = juce::Colours::black.withAlpha  (0.60f);
+    float glowAmt = juce::jlimit (0.0f, 1.0f, 0.18f + 0.75f * pos);
+    auto innerHi = juce::Colours::white.withAlpha (0.12f + 0.25f * glowAmt);
+    auto innerLo = juce::Colours::black.withAlpha  (0.60f);
     g.setGradientFill (juce::ColourGradient (innerHi, centre.x, centre.y,
                                              innerLo, centre.x, centre.y + rInner, true));
     g.fillEllipse ({ centre.x - rInner, centre.y - rInner, rInner * 2.0f, rInner * 2.0f });
 
-    // Reflet spéculaire
     juce::Path spec;
     spec.addPieSegment (centre.x - rInner, centre.y - rInner, rInner * 2.0f, rInner * 2.0f,
                         juce::degreesToRadians (-140.0f), juce::degreesToRadians (-40.0f), 0.70);
     g.setColour (juce::Colours::white.withAlpha (0.08f + 0.10f * glowAmt));
     g.fillPath (spec);
 
-    // Anneau de progression
-    const auto accent = s.findColour (juce::Slider::thumbColourId).withMultipliedBrightness (1.05f);
+    auto accent = s.findColour (juce::Slider::thumbColourId).withMultipliedBrightness (1.05f);
     juce::Path ring, track;
     ring.addCentredArc (centre.x, centre.y, rRing, rRing, 0.0f, startAngle, angle, true);
     track.addCentredArc(centre.x, centre.y, rRing, rRing, 0.0f, startAngle, endAngle, true);
@@ -80,44 +73,14 @@ void RoussovLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int 
         juce::PathStrokeType::EndCapStyle::rounded
     ));
 
-    // Repère
     juce::Path tick;
-    const float tickLen = rOuter * 0.46f;
+    float tickLen = rOuter * 0.46f;
     tick.addRoundedRectangle (-1.5f, -tickLen, 3.0f, tickLen * 0.40f, 1.2f);
     g.setColour (juce::Colours::white.withAlpha (0.90f));
     g.addTransform (juce::AffineTransform::rotation (angle).translated (centre.x, centre.y));
     g.fillPath (tick);
 
     g.restoreState();
-}
-
-//==================== ActivityLED ====================
-void ActivityLED::paint (juce::Graphics& g)
-{
-    auto area = getLocalBounds().toFloat().reduced (1.0f);
-    const float r = juce::jmin (area.getWidth(), area.getHeight()) * 0.5f;
-    const auto  c = area.getCentre();
-
-    const float a  = juce::jlimit (0.0f, 1.0f, brightness);
-    const auto on  = juce::Colour::fromRGB (180, 255, 120).withAlpha (0.80f * a);
-    const auto off = juce::Colours::black.withAlpha (0.70f);
-
-    if (a > 0.01f)
-    {
-        juce::ColourGradient halo (on.withAlpha (0.28f), c.x, c.y,
-                                   on.withAlpha (0.00f), c.x, c.y + r * 2.2f, true);
-        g.setGradientFill (halo);
-        g.fillEllipse (area.expanded (r * 0.55f));
-    }
-
-    g.setColour (off);
-    g.fillEllipse (area);
-
-    g.setColour (on);
-    g.fillEllipse (area.reduced (r * 0.30f));
-
-    g.setColour (juce::Colours::white.withAlpha (0.15f));
-    g.drawEllipse (area, 1.0f);
 }
 
 //==================== TinyBarMeter ====================
@@ -127,7 +90,7 @@ void TinyBarMeter::paint (juce::Graphics& g)
     g.setColour (juce::Colours::black.withAlpha (0.55f));
     g.fillRoundedRectangle (r, 2.0f);
 
-    const float v = juce::jlimit (0.0f, 1.0f, level);
+    float v = juce::jlimit (0.0f, 1.0f, level);
     auto fill = r.withWidth (juce::jmax (2.0f, r.getWidth() * v));
 
     auto c1 = juce::Colours::deepskyblue.withAlpha (0.95f);
@@ -149,9 +112,8 @@ PluginEditor::PluginEditor (PluginAudioProcessor& p)
 {
     setLookAndFeel (&lnf);
     setResizable (true, true);
-    setSize (420, 210); // hauteur réduite
+    setSize (420, 220);
 
-    // Titre
     addAndMakeVisible (titleLabel);
     titleLabel.setText ("Roussov", juce::dontSendNotification);
     titleLabel.setJustificationType (juce::Justification::centredLeft);
@@ -162,7 +124,6 @@ PluginEditor::PluginEditor (PluginAudioProcessor& p)
     subtitleLabel.setJustificationType (juce::Justification::centredLeft);
     subtitleLabel.setColour (juce::Label::textColourId, juce::Colours::grey);
 
-    // Volume
     addAndMakeVisible (volumeDial);
     volumeDial.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     volumeDial.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
@@ -175,13 +136,11 @@ PluginEditor::PluginEditor (PluginAudioProcessor& p)
     valueLabel.setText ("0.50", juce::dontSendNotification);
     valueLabel.setTooltip ("Gain (linéaire 0..1)");
 
-    // Meters
-    addAndMakeVisible (inLabel);   inLabel.setText ("IN",  juce::dontSendNotification);
-    addAndMakeVisible (outLabel);  outLabel.setText ("OUT", juce::dontSendNotification);
+    addAndMakeVisible (inLabel);  inLabel.setText ("IN",  juce::dontSendNotification);
+    addAndMakeVisible (outLabel); outLabel.setText ("OUT", juce::dontSendNotification);
     addAndMakeVisible (inMeter);
     addAndMakeVisible (outMeter);
 
-    // Attachment gain
     if (auto* pParam = processor.getValueTreeState().getParameter ("gain"))
         volumeAttachment = std::make_unique<SliderAttachment> (
             processor.getValueTreeState(), "gain", volumeDial);
@@ -189,7 +148,6 @@ PluginEditor::PluginEditor (PluginAudioProcessor& p)
     volumeDial.onValueChange = [this]
     {
         valueLabel.setText (juce::String (volumeDial.getValue(), 2), juce::dontSendNotification);
-        repaint(); // pour rafraîchir le halo externe
     };
 
     startTimerHz (30);
@@ -205,29 +163,11 @@ void PluginEditor::paint (juce::Graphics& g)
 {
     auto b = getLocalBounds().toFloat();
 
-    // Fond premium
     g.setGradientFill (juce::ColourGradient(
         juce::Colour::fromFloatRGBA (0.07f, 0.07f, 0.08f, 1.0f), b.getX(), b.getY(),
         juce::Colour::fromFloatRGBA (0.04f, 0.04f, 0.05f, 1.0f), b.getX(), b.getBottom(), false));
     g.fillRect (b);
 
-    // Halo externe autour du knob qui croît avec le volume
-    {
-        const auto dial = volumeDial.getBounds().toFloat();
-        const auto c = dial.getCentre();
-        const float r = juce::jmin (dial.getWidth(), dial.getHeight()) * 0.65f;
-
-        const float v = (float) volumeDial.getValue();           // 0..1
-        const float a = juce::jlimit (0.0f, 1.0f, 0.10f + 0.90f * v);
-        juce::Colour base = juce::Colours::deepskyblue;
-
-        juce::ColourGradient glow (base.withAlpha (0.22f * a), c.x, c.y,
-                                   base.withAlpha (0.00f),     c.x, c.y + r * (1.8f + v*0.8f), true);
-        g.setGradientFill (glow);
-        g.fillEllipse (dial.expanded (r * (0.55f + 0.25f * v)));
-    }
-
-    // Lignes décoratives
     g.setColour (juce::Colours::white.withAlpha (0.06f));
     g.fillRect (juce::Rectangle<float> (b.getX() + 16.0f, b.getY() + 72.0f, b.getWidth() - 32.0f, 1.0f));
     g.fillRect (juce::Rectangle<float> (b.getX() + 16.0f, b.getBottom() - 56.0f, b.getWidth() - 32.0f, 1.0f));
@@ -258,8 +198,6 @@ void PluginEditor::resized()
 
     outLabel.setBounds (outCol.removeFromLeft (labW));
     outMeter.setBounds (outCol.reduced (2, 8));
-
-    // Plus de zone MIDI
 }
 
 void PluginEditor::timerCallback()
@@ -269,6 +207,12 @@ void PluginEditor::timerCallback()
     repaint();
 }
 
-// Plus de notifyMidiIn/notifyMidiOut. À SUPPRIMER du .h également.
-void PluginEditor::setInputLevel (float linear01)  { inLin.store  (juce::jlimit (0.0f, 1.0f, linear01), std::memory_order_relaxed); }
-void PluginEditor::setOutputLevel(float linear01)  { outLin.store (juce::jlimit (0.0f, 1.0f, linear01), std::memory_order_relaxed); }
+void PluginEditor::setInputLevel (float linear01)
+{
+    inLin.store (juce::jlimit (0.0f, 1.0f, linear01), std::memory_order_relaxed);
+}
+
+void PluginEditor::setOutputLevel (float linear01)
+{
+    outLin.store (juce::jlimit (0.0f, 1.0f, linear01), std::memory_order_relaxed);
+}

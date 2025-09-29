@@ -7,6 +7,9 @@
 class PluginAudioProcessor final : public juce::AudioProcessor
 {
 public:
+    // Pas brut linéaire (TB) pour les paramètres 0..1
+    static constexpr float kParamStep = 0.01f;
+
     PluginAudioProcessor();
     ~PluginAudioProcessor() override;
 
@@ -47,16 +50,17 @@ public:
     juce::AudioProcessorValueTreeState&       getValueTreeState()       noexcept { return apvts; }
     const juce::AudioProcessorValueTreeState& getValueTreeState() const noexcept { return apvts; }
     float getInputLevel()  const noexcept { return inLevel.load (std::memory_order_relaxed); }
-    float getOutputLevel() const noexcept { return outLevel.load(std::memory_order_relaxed); }
+    float getOutputLevel() const noexcept { return outLevel.load (std::memory_order_relaxed); }
 
 private:
-    // Paramètres
+    // Paramètres (APVTS: "inTrim", "outVol", "bypass", "midiChan")
     juce::AudioProcessorValueTreeState apvts;
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
-    // Smoothing
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> gainSmoothed;
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> wetSmoothed;
+    // Smoothing linéaire 0..1 (IN / OUT / WET)
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> preSmoothed;   // IN
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> postSmoothed;  // OUT
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> wetSmoothed;   // bypass→wet
     float  lastSampleRate { 44100.0f };
 
     // Meters
@@ -68,10 +72,6 @@ private:
     // UI thread-safe
     std::atomic<float> inLevel  { 0.0f };
     std::atomic<float> outLevel { 0.0f };
-
-    // Traces MIDI (actives uniquement si plugin déclare du MIDI)
-    std::atomic<float> midiInFlash  { 0.0f };
-    std::atomic<float> midiOutFlash { 0.0f };
 
     // Crossfade dry/wet
     juce::AudioBuffer<float> dryBuffer;

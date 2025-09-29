@@ -7,7 +7,6 @@ RoussovLookAndFeel::RoussovLookAndFeel()
     knobNoise = juce::Image (juce::Image::ARGB, 64, 64, true);
     juce::Graphics ng (knobNoise);
     juce::Random rng (0x13579BDF);
-
     for (int y = 0; y < knobNoise.getHeight(); ++y)
         for (int x = 0; x < knobNoise.getWidth(); ++x)
         {
@@ -25,10 +24,10 @@ void RoussovLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int 
 
     auto bounds = juce::Rectangle<int>(x, y, w, h).toFloat().reduced (4.0f);
     auto centre = bounds.getCentre();
-    float rOuter = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
-    float rInner = rOuter * 0.64f;
-    float rRing  = rOuter * 0.88f;
-    float angle  = startAngle + pos * (endAngle - startAngle);
+    const float rOuter = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
+    const float rInner = rOuter * 0.64f;
+    const float rRing  = rOuter * 0.88f;
+    const float angle  = startAngle + pos * (endAngle - startAngle);
 
     g.setColour (juce::Colours::black.withAlpha (0.35f));
     g.fillEllipse (bounds.translated (0, 1.5f));
@@ -45,7 +44,7 @@ void RoussovLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int 
     g.setColour (juce::Colours::white.withAlpha (0.08f));
     g.drawEllipse (bounds.reduced (0.5f), 1.0f);
 
-    float glowAmt = juce::jlimit (0.0f, 1.0f, 0.18f + 0.75f * pos);
+    const float glowAmt = juce::jlimit (0.0f, 1.0f, 0.18f + 0.75f * pos);
     auto innerHi = juce::Colours::white.withAlpha (0.12f + 0.25f * glowAmt);
     auto innerLo = juce::Colours::black.withAlpha  (0.60f);
     g.setGradientFill (juce::ColourGradient (innerHi, centre.x, centre.y,
@@ -67,14 +66,12 @@ void RoussovLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int 
     g.strokePath (track, juce::PathStrokeType (juce::jmax (1.5f, rOuter * 0.08f)));
 
     g.setColour (accent);
-    g.strokePath (ring, juce::PathStrokeType (
-        juce::jmax (1.5f, rOuter * 0.08f),
-        juce::PathStrokeType::JointStyle::curved,
-        juce::PathStrokeType::EndCapStyle::rounded
-    ));
+    g.strokePath (ring, juce::PathStrokeType (juce::jmax (1.5f, rOuter * 0.08f),
+                                              juce::PathStrokeType::curved,
+                                              juce::PathStrokeType::rounded));
 
     juce::Path tick;
-    float tickLen = rOuter * 0.46f;
+    const float tickLen = rOuter * 0.46f;
     tick.addRoundedRectangle (-1.5f, -tickLen, 3.0f, tickLen * 0.40f, 1.2f);
     g.setColour (juce::Colours::white.withAlpha (0.90f));
     g.addTransform (juce::AffineTransform::rotation (angle).translated (centre.x, centre.y));
@@ -90,7 +87,7 @@ void TinyBarMeter::paint (juce::Graphics& g)
     g.setColour (juce::Colours::black.withAlpha (0.55f));
     g.fillRoundedRectangle (r, 2.0f);
 
-    float v = juce::jlimit (0.0f, 1.0f, level);
+    const float v = juce::jlimit (0.0f, 1.0f, level);
     auto fill = r.withWidth (juce::jmax (2.0f, r.getWidth() * v));
 
     auto c1 = juce::Colours::deepskyblue.withAlpha (0.95f);
@@ -112,7 +109,7 @@ PluginEditor::PluginEditor (PluginAudioProcessor& p)
 {
     setLookAndFeel (&lnf);
     setResizable (true, true);
-    setSize (420, 220);
+    setSize (520, 260);
 
     addAndMakeVisible (titleLabel);
     titleLabel.setText ("Roussov", juce::dontSendNotification);
@@ -124,31 +121,46 @@ PluginEditor::PluginEditor (PluginAudioProcessor& p)
     subtitleLabel.setJustificationType (juce::Justification::centredLeft);
     subtitleLabel.setColour (juce::Label::textColourId, juce::Colours::grey);
 
-    addAndMakeVisible (volumeDial);
-    volumeDial.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    volumeDial.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
-    volumeDial.setRange (0.0, 1.0, 0.001);
-    volumeDial.setDoubleClickReturnValue (true, 0.5);
-    volumeDial.setColour (juce::Slider::thumbColourId, juce::Colours::deepskyblue.withAlpha (0.95f));
+    auto prepDial = [] (juce::Slider& s)
+    {
+        s.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        s.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+        s.setRange (0.0, 1.0, PluginAudioProcessor::kParamStep);
+        s.setDoubleClickReturnValue (true, 0.5);
+        s.setColour (juce::Slider::thumbColourId, juce::Colours::deepskyblue.withAlpha (0.95f));
+    };
+    prepDial (inDial);
+    prepDial (outDial);
 
-    addAndMakeVisible (valueLabel);
-    valueLabel.setJustificationType (juce::Justification::centred);
-    valueLabel.setText ("0.50", juce::dontSendNotification);
-    valueLabel.setTooltip ("Gain (linéaire 0..1)");
+    inLabel.setText  ("IN",  juce::dontSendNotification);
+    outLabel.setText ("OUT", juce::dontSendNotification);
 
-    addAndMakeVisible (inLabel);  inLabel.setText ("IN",  juce::dontSendNotification);
-    addAndMakeVisible (outLabel); outLabel.setText ("OUT", juce::dontSendNotification);
+    inValLabel.setJustificationType  (juce::Justification::centred);
+    outValLabel.setJustificationType (juce::Justification::centred);
+    inValLabel .setText ("0.50", juce::dontSendNotification);
+    outValLabel.setText ("0.50", juce::dontSendNotification);
+    inValLabel .setTooltip ("Pré-gain linéaire 0..1, pas 0.01");
+    outValLabel.setTooltip ("Post-gain linéaire 0..1, pas 0.01");
+
+    addAndMakeVisible (inLabel);   addAndMakeVisible (outLabel);
+    addAndMakeVisible (inDial);    addAndMakeVisible (outDial);
+    addAndMakeVisible (inValLabel);addAndMakeVisible (outValLabel);
+
+    midiLabel.setText ("MIDI CH", juce::dontSendNotification);
+    addAndMakeVisible (midiLabel);
+    addAndMakeVisible (midiChanBox);
+    midiChanBox.addItem ("Omni", 1);
+    for (int ch = 1; ch <= 16; ++ch) midiChanBox.addItem ("Ch " + juce::String (ch), ch + 1);
+
     addAndMakeVisible (inMeter);
     addAndMakeVisible (outMeter);
 
-    if (auto* pParam = processor.getValueTreeState().getParameter ("gain"))
-        volumeAttachment = std::make_unique<SliderAttachment> (
-            processor.getValueTreeState(), "gain", volumeDial);
+    inAttachment  = std::make_unique<SliderAttachment>  (processor.getValueTreeState(), "inTrim",   inDial);
+    outAttachment = std::make_unique<SliderAttachment>  (processor.getValueTreeState(), "outVol",   outDial);
+    midiAttachment= std::make_unique<ComboBoxAttachment>(processor.getValueTreeState(), "midiChan", midiChanBox);
 
-    volumeDial.onValueChange = [this]
-    {
-        valueLabel.setText (juce::String (volumeDial.getValue(), 2), juce::dontSendNotification);
-    };
+    inDial.onValueChange  = [this]{ inValLabel .setText (juce::String (inDial.getValue(),  2), juce::dontSendNotification); };
+    outDial.onValueChange = [this]{ outValLabel.setText (juce::String (outDial.getValue(), 2), juce::dontSendNotification); };
 
     startTimerHz (30);
 }
@@ -156,21 +168,22 @@ PluginEditor::PluginEditor (PluginAudioProcessor& p)
 PluginEditor::~PluginEditor()
 {
     setLookAndFeel (nullptr);
-    volumeAttachment.reset();
+    inAttachment.reset();
+    outAttachment.reset();
+    midiAttachment.reset();
 }
 
 void PluginEditor::paint (juce::Graphics& g)
 {
     auto b = getLocalBounds().toFloat();
-
     g.setGradientFill (juce::ColourGradient(
         juce::Colour::fromFloatRGBA (0.07f, 0.07f, 0.08f, 1.0f), b.getX(), b.getY(),
         juce::Colour::fromFloatRGBA (0.04f, 0.04f, 0.05f, 1.0f), b.getX(), b.getBottom(), false));
     g.fillRect (b);
 
     g.setColour (juce::Colours::white.withAlpha (0.06f));
-    g.fillRect (juce::Rectangle<float> (b.getX() + 16.0f, b.getY() + 72.0f, b.getWidth() - 32.0f, 1.0f));
-    g.fillRect (juce::Rectangle<float> (b.getX() + 16.0f, b.getBottom() - 56.0f, b.getWidth() - 32.0f, 1.0f));
+    g.fillRect (juce::Rectangle<float>(b.getX() + 16.0f, b.getY() + 72.0f,        b.getWidth() - 32.0f, 1.0f));
+    g.fillRect (juce::Rectangle<float>(b.getX() + 16.0f, b.getBottom() - 56.0f,   b.getWidth() - 32.0f, 1.0f));
 }
 
 void PluginEditor::resized()
@@ -181,29 +194,35 @@ void PluginEditor::resized()
     titleLabel   .setBounds (top.removeFromLeft (200));
     subtitleLabel.setBounds (top);
 
-    auto mid = r.removeFromTop (112);
-    auto dialArea = mid.removeFromLeft (140);
-    volumeDial.setBounds (dialArea.reduced (8));
-    valueLabel.setBounds (mid.removeFromLeft (80));
+    auto mid = r.removeFromTop (120);
+    auto leftDial  = mid.removeFromLeft (180).reduced (8);
+    auto rightDial = mid.removeFromLeft (180).reduced (8);
+
+    inLabel     .setBounds (leftDial.removeFromTop (18));
+    inDial      .setBounds (leftDial.removeFromTop (leftDial.getHeight() - 22));
+    inValLabel  .setBounds (leftDial);
+
+    outLabel    .setBounds (rightDial.removeFromTop (18));
+    outDial     .setBounds (rightDial.removeFromTop (rightDial.getHeight() - 22));
+    outValLabel .setBounds (rightDial);
+
+    auto midiRow = r.removeFromTop (28);
+    midiLabel   .setBounds (midiRow.removeFromLeft (70));
+    midiChanBox .setBounds (midiRow.removeFromLeft (140));
 
     auto metersRow = r.removeFromTop (36);
     auto colW = metersRow.getWidth() / 2;
-
     auto inCol  = metersRow.removeFromLeft (colW);
     auto outCol = metersRow;
 
-    const int labW = 40;
-    inLabel .setBounds (inCol.removeFromLeft (labW));
-    inMeter .setBounds (inCol.reduced (2, 8));
-
-    outLabel.setBounds (outCol.removeFromLeft (labW));
+    inMeter .setBounds (inCol .reduced (2, 8));
     outMeter.setBounds (outCol.reduced (2, 8));
 }
 
 void PluginEditor::timerCallback()
 {
-    inMeter .setLevel (inLin .load (std::memory_order_relaxed));
-    outMeter.setLevel (outLin.load (std::memory_order_relaxed));
+    inMeter .setLevel (processor.getInputLevel());
+    outMeter.setLevel (processor.getOutputLevel());
     repaint();
 }
 

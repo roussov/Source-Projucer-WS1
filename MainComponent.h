@@ -19,7 +19,6 @@ public:
     MainComponent();
     ~MainComponent() override;
 
-    //==============================================================================
     void resized() override;
 
 private:

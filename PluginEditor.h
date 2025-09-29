@@ -8,7 +8,8 @@
 
 class PluginAudioProcessor; // défini dans PluginProcessor.h
 
-using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
+using SliderAttachment    = juce::AudioProcessorValueTreeState::SliderAttachment;
+using ComboBoxAttachment  = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
 
 // ─────────────────── Look & Feel ───────────────────
 class RoussovLookAndFeel final : public juce::LookAndFeel_V4
@@ -45,11 +46,10 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
-    // API thread-safe (le Processor peut appeler ces setters)
+    // API thread-safe
     void setInputLevel  (float linear01);
     void setOutputLevel (float linear01);
 
-    // Stubs pour compat éventuelle (MIDI activity flash)
     void notifyMidiIn  (float) {}
     void notifyMidiOut (float) {}
 
@@ -60,9 +60,12 @@ private:
     RoussovLookAndFeel   lnf;
 
     // UI
-    juce::Label  titleLabel, subtitleLabel, valueLabel, inLabel, outLabel;
-    juce::Slider volumeDial;
-    std::unique_ptr<SliderAttachment> volumeAttachment;
+    juce::Label  titleLabel, subtitleLabel;
+    juce::Label  inLabel, outLabel, inValLabel, outValLabel, midiLabel;
+    juce::Slider inDial, outDial;               // In = "inTrim", Out = "outVol"
+    juce::ComboBox midiChanBox;                 // 0=Omni, 1..16
+    std::unique_ptr<SliderAttachment>   inAttachment, outAttachment;
+    std::unique_ptr<ComboBoxAttachment> midiAttachment;
     TinyBarMeter inMeter, outMeter;
 
     // niveaux affichés (thread-safe)

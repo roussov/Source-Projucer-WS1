@@ -1,4 +1,4 @@
-//============================== MainComponent.cpp ===========================
+// =========================== MainComponent.cpp ===========================
 // Spectra — Standalone host for PluginAudioProcessor/PluginEditor
 // SPDX-License-Identifier: MIT
 

@@ -1,308 +1,189 @@
-// =========================== MainComponent.cpp ===========================
-// Spectra — Standalone host for PluginAudioProcessor/PluginEditor
-// SPDX-License-Identifier: MIT
-
+//============================== MainComponent.cpp ============================
 #include "MainComponent.h"
-#include "PluginProcessor.h"
-#include "PluginEditor.h"
-#include <JuceHeader.h>
+#include <cmath>
 
-namespace {
-constexpr const char* kAppVendor   = "SpectraAudio";
-constexpr const char* kAppName     = "SpectraStandalone";
-constexpr const char* kKeyAudioXML = "audioDeviceXML";
-constexpr const char* kKeyMidiList = "midiEnabled"; // CSV by device identifier
-
-static std::unique_ptr<juce::PropertiesFile> createLocalProps()
+//=============================================================================
+// Échelle UI bornée
+static float uiScaleFor (const juce::Component& c)
 {
-    juce::PropertiesFile::Options o;
-    o.applicationName     = kAppName;
-    o.filenameSuffix      = ".properties";
-    o.osxLibrarySubFolder = "Application Support/" + juce::String(kAppVendor);
-    o.commonToAllUsers    = false;
-    o.storageFormat       = juce::PropertiesFile::storeAsXML;
-    o.millisecondsBeforeSaving = 200;
-
-    auto dir = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-                 .getChildFile(kAppVendor).getChildFile(kAppName);
-    dir.createDirectory();
-    o.folderName = dir.getFullPathName();
-    return std::make_unique<juce::PropertiesFile>(o);
+    const float sx = (float) c.getWidth()  / (float) MainComponent::kWindowW;
+    const float sy = (float) c.getHeight() / (float) MainComponent::kWindowH;
+    return juce::jlimit (MainComponent::kMinScale, MainComponent::kMaxScale, juce::jmin (sx, sy));
 }
-} // namespace
+static inline int SX (float s, int v) { return (int) std::round (v * s); }
 
-//==============================================================================
-// Construction / Destruction
-//==============================================================================
+//=============================================================================
+// Halo doré puissant, sans anneau. Le bouton agit comme source lumineuse.
+void MainComponent::drawGoldenLight (juce::Graphics& g,
+                                     juce::Rectangle<float> around,
+                                     float intensity,
+                                     juce::Rectangle<float> fullArea)
+{
+    intensity = juce::jlimit (0.0f, 1.0f, intensity);
+
+    const auto c = around.getCentre();
+    const float diag = std::sqrt (fullArea.getWidth()*fullArea.getWidth()
+                                + fullArea.getHeight()*fullArea.getHeight());
+    const float R = juce::jmap (intensity, 0.0f, 1.0f, 0.0f, diag * 0.75f); // portée accrue
+
+    // Voile global doré qui teinte l’UI
+    g.setColour (juce::Colour::fromRGB (255,230,150).withAlpha (0.10f * intensity));
+    g.fillRect (fullArea);
+
+    // Noyau et halo progressif (pas d’anneau)
+    const auto c0 = juce::Colour::fromRGB (255,250,210).withAlpha (0.98f * intensity); // centre aveuglant
+    const auto c1 = juce::Colour::fromRGB (255,236,160).withAlpha (0.75f * intensity);
+    const auto c2 = juce::Colour::fromRGB (255,220,120).withAlpha (0.34f * intensity);
+    const auto c3 = juce::Colour::fromRGB (255,220,120).withAlpha (0.00f);
+
+    juce::ColourGradient grad (c0, c.x, c.y, c3, c.x, c.y, true);
+    grad.addColour (0.00, c0);
+    grad.addColour (0.30, c1);
+    grad.addColour (0.70, c2);
+    grad.addColour (1.00, c3);
+
+    juce::Rectangle<float> halo (c.x - R, c.y - R, R*2.0f, R*2.0f);
+    g.setGradientFill (grad);
+    g.fillEllipse (halo);
+}
+
+//=============================================================================
 MainComponent::MainComponent()
 {
-    props = createLocalProps();
+    setSize (kWindowW, kWindowH);
 
-    // Restaure AudioDeviceManager
-    std::unique_ptr<juce::XmlElement> saved;
-    if (auto s = props->getValue(kKeyAudioXML); s.isNotEmpty())
-        saved = juce::XmlDocument::parse(s);
+    // Slider principal
+    gain.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    gain.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    gain.setRange (0.0, 1.0, 0.001);
+    gain.setValue (0.50);
+    gain.onValueChange = [this]
+    {
+        const float v = (float) gain.getValue();
+        const auto s = juce::String (v, 2);
+        gainReadout.setText (s, juce::dontSendNotification);
+        gainReadoutRight.setText (s, juce::dontSendNotification);
+        repaint();
+    };
 
-    deviceManager.initialise(2, 2, saved.get(), true, juce::String(), nullptr);
-    deviceManager.addChangeListener(this);
+    // Readouts
+    gainReadout.setJustificationType (juce::Justification::centred);
+    gainReadout.setColour (juce::Label::textColourId, juce::Colours::white);
+    gainReadout.setBorderSize ({ 6, 16, 6, 16 });
+    gainReadout.setColour (juce::Label::backgroundColourId, juce::Colour::fromRGB (20,20,22));
+    gainReadout.setColour (juce::Label::outlineColourId, juce::Colours::white.withAlpha (0.25f));
+    gainReadout.setText ("0.50", juce::dontSendNotification);
 
-    // Branche le processor + audio callback
-    processor = std::make_unique<PluginAudioProcessor>();
-    player.setProcessor(processor.get());
-    deviceManager.addAudioCallback(&player);
+    gainReadoutRight.setJustificationType (juce::Justification::centred);
+    gainReadoutRight.setColour (juce::Label::textColourId, juce::Colours::white);
+    gainReadoutRight.setText ("0.50", juce::dontSendNotification);
 
-    // MIDI
-    restoreOrEnableAllMidiInputs();
+    // Titres
+    titleLeft .setFont (titleLeft .getFont().withHeight (28.0f).boldened());
+    titleLeft .setColour (juce::Label::textColourId, juce::Colours::white);
+    titleRight.setFont (titleRight.getFont().withHeight (24.0f).boldened());
+    titleRight.setColour (juce::Label::textColourId, juce::Colours::grey);
 
-    // UI
-    editor = std::make_unique<PluginEditor>(*processor);
-    addAndMakeVisible(editor.get());
+    addAndMakeVisible (titleLeft);
+    addAndMakeVisible (titleRight);
+    addAndMakeVisible (gain);
+    addAndMakeVisible (gainReadout);
+    addAndMakeVisible (gainReadoutRight);
+    addAndMakeVisible (meterIn);
+    addAndMakeVisible (meterOut);
 
-    btnSettings.setButtonText("Audio/MIDI…");
-    btnSettings.setTooltip("Ouvrir les réglages Audio/MIDI (⌘,)");
-    btnSettings.addListener(this);
-    addAndMakeVisible(btnSettings);
-
-    btnReset.setButtonText("Reset Audio");
-    btnReset.setTooltip("Réinitialiser la configuration audio (⌘R)");
-    btnReset.addListener(this);
-    addAndMakeVisible(btnReset);
-
-    btnToggleMidi.setButtonText("MIDI All On/Off");
-    btnToggleMidi.setTooltip("Activer/Désactiver tous les MIDI IN (⌘M)");
-    btnToggleMidi.addListener(this);
-    addAndMakeVisible(btnToggleMidi);
-
-    status.setJustificationType(juce::Justification::centredLeft);
-    addAndMakeVisible(status);
-
-    const int w = juce::jmax(480, editor->getWidth());
-    const int h = juce::jmax(320, editor->getHeight()) + commandBarHeight();
-    setSize(w, h);
-
-    addKeyListener(this);
-    startTimerHz(15);
-    updateStatus();
+    setAudioChannels (2, 2);
+    startTimerHz (30);
 }
 
-MainComponent::~MainComponent()
+MainComponent::~MainComponent() { shutdownAudio(); }
+
+//=============================================================================
+void MainComponent::prepareToPlay (int samplesPerBlockExpected, double sampleRate)
 {
-    stopTimer();
-    saveAudioState();
-    saveMidiEnabledList();
-
-    deviceManager.removeChangeListener(this);
-
-    for (auto& d : juce::MidiInput::getAvailableDevices())
-        deviceManager.removeMidiInputDeviceCallback(d.identifier, &player.getMidiMessageCollector());
-
-    deviceManager.removeAudioCallback(&player);
-    player.setProcessor(nullptr);
-
-    if (settingsDialog) settingsDialog->setVisible(false);
-    settingsDialog.reset();
-    editor.reset();
-    processor.reset();
-    props.reset();
+    juce::ignoreUnused (samplesPerBlockExpected);
+    sr = sampleRate > 0.0 ? sampleRate : 48000.0;
 }
 
-//==============================================================================
-// Layout
-//==============================================================================
+//=============================================================================
+void MainComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
+{
+    auto* buffer = info.buffer;
+    const int n = info.numSamples;
+
+    auto* in  = buffer->getReadPointer  (juce::jmin (0, buffer->getNumChannels()-1), info.startSample);
+    auto* out = buffer->getWritePointer (juce::jmin (0, buffer->getNumChannels()-1), info.startSample);
+
+    const float g = (float) gain.getValue();
+    float accIn = 0.0f, accOut = 0.0f;
+
+    for (int i = 0; i < n; ++i)
+    {
+        const float x = in[i];
+        const float y = x * g;
+        out[i] = y;
+        accIn  += std::abs (x);
+        accOut += std::abs (y);
+    }
+
+    const float targetIn  = juce::jlimit (0.0f, 1.0f, accIn  / (float) n);
+    const float targetOut = juce::jlimit (0.0f, 1.0f, accOut / (float) n);
+
+    const float aUp   = 1.0f - std::exp (-meterAttack  * (float) n / (float) sr);
+    const float aDown = 1.0f - std::exp (-meterRelease * (float) n / (float) sr);
+
+    auto lerp = [] (float a, float b, float t) noexcept { return a + t * (b - a); };
+
+    inLevel  = targetIn  > inLevel  ? lerp (inLevel,  targetIn,  aUp)
+                                    : lerp (inLevel,  targetIn,  aDown);
+    outLevel = targetOut > outLevel ? lerp (outLevel, targetOut, aUp)
+                                    : lerp (outLevel, targetOut, aDown);
+
+    meterIn.setLevel  (inLevel);
+    meterOut.setLevel (outLevel);
+}
+
+//=============================================================================
+void MainComponent::paint (juce::Graphics& g)
+{
+    g.fillAll (juce::Colour::fromRGB (14, 14, 16));
+
+    const auto area = getLocalBounds().toFloat();
+
+    // Halo doré intensifié selon volume
+    const float v = (float) gain.getValue();
+    const float intensity = std::pow (v, 1.8f);
+    drawGoldenLight (g, gain.getBounds().toFloat(), intensity, area);
+}
+
+//=============================================================================
 void MainComponent::resized()
 {
-    auto r = getLocalBounds();
-    auto top = r.removeFromTop(commandBarHeight()).reduced(8, 6);
+    const float s = uiScaleFor (*this);
 
-    btnSettings.setBounds(top.removeFromLeft(180));
-    btnReset.setBounds(top.removeFromLeft(140));
-    btnToggleMidi.setBounds(top.removeFromLeft(160));
-    status.setBounds(top.reduced(8, 0));
+    titleLeft .setBounds (SX (s, 32),              SX (s, 64), SX (s, 240), SX (s, 40));
+    titleRight.setBounds (getWidth() - SX (s,220), SX (s, 64), SX (s, 200), SX (s, 40));
+    titleLeft .setFont (titleLeft .getFont().withHeight (28.0f * s).boldened());
+    titleRight.setFont (titleRight.getFont().withHeight (24.0f * s).boldened());
 
-    if (editor) editor->setBounds(r);
+    // Bouton centré au milieu du halo
+    const int knobSize = SX (s, 180);
+    const int knobX = (getWidth()  - knobSize) / 2;
+    const int knobY = (getHeight() - knobSize) / 2;
+    gain.setBounds (knobX, knobY, knobSize, knobSize);
+
+    gainReadout.setBounds      (getWidth()/2 - SX (s, 60), knobY + knobSize + SX (s, 20), SX (s,120), SX (s,36));
+    gainReadoutRight.setBounds (getWidth()/2 + SX (s,140), knobY + knobSize/2 - SX (s,15), SX (s,80),  SX (s,30));
+
+    meterIn .setBounds (SX (s, 88),                 getHeight() - SX (s,140),
+                        juce::jmax (SX (s,180), getWidth()/2 - SX (s,160)), SX (s,18));
+    meterOut.setBounds (getWidth()/2 + SX (s,128),  getHeight() - SX (s,140),
+                        juce::jmax (SX (s,180), getWidth()/2 - SX (s,168)), SX (s,18));
 }
 
-//==============================================================================
-// Callbacks UI / système
-//==============================================================================
-void MainComponent::buttonClicked(juce::Button* b)
-{
-    if (b == &btnSettings) openSettingsDialog();
-    else if (b == &btnReset) resetAudioToDefault();
-    else if (b == &btnToggleMidi) toggleAllMidiInputs();
-}
-
-void MainComponent::changeListenerCallback(juce::ChangeBroadcaster*)
-{
-    updateStatus();
-    saveAudioState();
-    reapplyMidiCallbacks();
-}
-
-bool MainComponent::keyPressed(const juce::KeyPress& k, juce::Component*)
-{
-   #if JUCE_MAC
-    const bool cmd = k.getModifiers().isCommandDown();
-   #else
-    const bool cmd = k.getModifiers().isCtrlDown();
-   #endif
-
-    if (cmd && k.getKeyCode() == ',') { openSettingsDialog(); return true; }
-    if (cmd && (k.getTextCharacter() == 'r' || k.getKeyCode() == juce::KeyPress::F5Key))
-    { resetAudioToDefault(); return true; }
-    if (cmd && (k.getTextCharacter() == 'm'))
-    { toggleAllMidiInputs(); return true; }
-
-    return false;
-}
-
+//=============================================================================
 void MainComponent::timerCallback()
 {
-    if (editor)
-    {
-        const int ew = editor->getWidth();
-        const int eh = editor->getHeight() + commandBarHeight();
-        if (ew != getWidth() || eh != getHeight())
-            setSize(juce::jmax(480, ew), juce::jmax(320, eh));
-    }
-    updateStatus();
-}
-
-//==============================================================================
-// Helpers
-//==============================================================================
-int MainComponent::commandBarHeight() { return 44; }
-
-void MainComponent::openSettingsDialog()
-{
-    if (settingsDialog) { settingsDialog->toFront(true); return; }
-
-    auto* selector = new juce::AudioDeviceSelectorComponent(
-        deviceManager, 0, 2, 0, 2,
-        true, true, false, true
-    );
-    selector->setSize(520, 420);
-
-    juce::DialogWindow::LaunchOptions o;
-    o.dialogTitle                   = "Réglages Audio/MIDI";
-    o.content.setOwned(selector);
-    o.componentToCentreAround       = this;
-    o.dialogBackgroundColour        = juce::Colours::black.withAlpha(0.85f);
-    o.escapeKeyTriggersCloseButton  = true;
-    o.useNativeTitleBar             = true;
-    o.resizable                     = true;
-    o.useBottomRightCornerResizer   = true;
-
-    settingsDialog.reset(o.launchAsync());
-}
-
-void MainComponent::resetAudioToDefault()
-{
-    deviceManager.closeAudioDevice();
-    deviceManager.initialise(2, 2, nullptr, true, juce::String(), nullptr);
-    reapplyMidiCallbacks();
-    updateStatus();
-}
-
-void MainComponent::saveAudioState()
-{
-    if (!props) return;
-    if (auto xml = deviceManager.createStateXml())
-    {
-        props->setValue(kKeyAudioXML, xml->toString());
-        props->saveIfNeeded();
-    }
-}
-
-void MainComponent::saveMidiEnabledList()
-{
-    if (!props) return;
-    juce::StringArray enabled;
-    for (auto& d : juce::MidiInput::getAvailableDevices())
-        if (deviceManager.isMidiInputDeviceEnabled(d.identifier))
-            enabled.add(d.identifier);
-    props->setValue(kKeyMidiList, enabled.joinIntoString(","));
-    props->saveIfNeeded();
-}
-
-void MainComponent::restoreOrEnableAllMidiInputs()
-{
-    auto csv = props ? props->getValue(kKeyMidiList) : juce::String();
-    auto all = juce::MidiInput::getAvailableDevices();
-
-    if (csv.isNotEmpty())
-    {
-        juce::StringArray want; want.addTokens(csv, ",", "\"");
-        for (auto& d : all)
-        {
-            const bool en = want.contains(d.identifier, true);
-            deviceManager.setMidiInputDeviceEnabled(d.identifier, en);
-            deviceManager.removeMidiInputDeviceCallback(d.identifier, &player.getMidiMessageCollector());
-            if (en)
-                deviceManager.addMidiInputDeviceCallback(d.identifier, &player.getMidiMessageCollector());
-        }
-    }
-    else
-    {
-        for (auto& d : all)
-        {
-            deviceManager.setMidiInputDeviceEnabled(d.identifier, true);
-            deviceManager.addMidiInputDeviceCallback(d.identifier, &player.getMidiMessageCollector());
-        }
-        saveMidiEnabledList();
-    }
-}
-
-void MainComponent::reapplyMidiCallbacks()
-{
-    for (auto& d : juce::MidiInput::getAvailableDevices())
-        deviceManager.removeMidiInputDeviceCallback(d.identifier, &player.getMidiMessageCollector());
-
-    for (auto& d : juce::MidiInput::getAvailableDevices())
-        if (deviceManager.isMidiInputDeviceEnabled(d.identifier))
-            deviceManager.addMidiInputDeviceCallback(d.identifier, &player.getMidiMessageCollector());
-}
-
-void MainComponent::toggleAllMidiInputs()
-{
-    auto devices = juce::MidiInput::getAvailableDevices();
-    bool anyDisabled = false;
-    for (auto& d : devices)
-        if (!deviceManager.isMidiInputDeviceEnabled(d.identifier)) { anyDisabled = true; break; }
-
-    for (auto& d : devices)
-    {
-        deviceManager.setMidiInputDeviceEnabled(d.identifier, anyDisabled);
-        deviceManager.removeMidiInputDeviceCallback(d.identifier, &player.getMidiMessageCollector());
-        if (anyDisabled)
-            deviceManager.addMidiInputDeviceCallback(d.identifier, &player.getMidiMessageCollector());
-    }
-    saveMidiEnabledList();
-    updateStatus();
-}
-
-void MainComponent::updateStatus()
-{
-    juce::String s;
-    if (auto* dev = deviceManager.getCurrentAudioDevice())
-    {
-        const auto nm  = dev->getName();
-        const auto sr  = dev->getCurrentSampleRate();
-        const auto bs  = dev->getCurrentBufferSizeSamples();
-        const auto inC = dev->getActiveInputChannels().countNumberOfSetBits();
-        const auto ouC = dev->getActiveOutputChannels().countNumberOfSetBits();
-
-        int midiOn = 0;
-        for (auto& d : juce::MidiInput::getAvailableDevices())
-            if (deviceManager.isMidiInputDeviceEnabled(d.identifier)) ++midiOn;
-
-        s << "Device: " << nm
-          << "   SR: " << juce::String(sr, 0) << " Hz"
-          << "   Buffer: " << bs << " samples"
-          << "   I/O: " << inC << "/" << ouC
-          << "   MIDI IN: " << midiOn;
-    }
-    else s = "Aucun périphérique audio actif";
-
-    status.setText(s, juce::dontSendNotification);
+    const float s = uiScaleFor (*this);
+    repaint (juce::Rectangle<int> (0, SX (s, 340), getWidth(), SX (s, 80)));
 }

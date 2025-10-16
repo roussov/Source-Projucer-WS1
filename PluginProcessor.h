@@ -1,83 +1,79 @@
-//============================== PluginProcessor.h =============================
+//============================== PluginProcessor.h ===============================
 #pragma once
+#include <JuceHeader.h>
 
-#include <juce_audio_processors/juce_audio_processors.h>
-#include <atomic>
+// Déclaration anticipée de l'éditeur
+class PluginAudioProcessorEditor;
 
+/**
+ * Processeur audio principal.
+ * Paramètre unique: "gain" (0..1, linéaire).
+ * Expose niveaux IN/OUT lissés pour l'UI.
+ */
 class PluginAudioProcessor final : public juce::AudioProcessor
 {
 public:
-    // Pas brut linéaire (TB) pour les paramètres 0..1
-    static constexpr float kParamStep = 0.01f;
-
     PluginAudioProcessor();
     ~PluginAudioProcessor() override;
 
-    // Identité
-    const juce::String getName() const override;
-    bool acceptsMidi() const override;
-    bool producesMidi() const override;
-    bool isMidiEffect() const override;
-    double getTailLengthSeconds() const override;
+    //==============================================================================
+    // JUCE: infos plugin
+    const juce::String getName() const override                       { return "Spectra"; }
+    bool acceptsMidi() const override                                  { return false; }
+    bool producesMidi() const override                                 { return false; }
+    bool isMidiEffect() const override                                 { return false; }
+    double getTailLengthSeconds() const override                       { return 0.0; }
 
-    // Programmes
-    int getNumPrograms() override               { return 1; }
-    int getCurrentProgram() override            { return 0; }
-    void setCurrentProgram (int) override       {}
-    const juce::String getProgramName (int) override { return {}; }
-    void changeProgramName (int, const juce::String&) override {}
+    // Programmes (non utilisés)
+    int getNumPrograms() override                                      { return 1; }
+    int getCurrentProgram() override                                   { return 0; }
+    void setCurrentProgram (int) override                              {}
+    const juce::String getProgramName (int) override                   { return {}; }
+    void changeProgramName (int, const juce::String&) override         {}
 
-    // Audio
+    //==============================================================================
+    // Préparation / audio
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
-    void releaseResources() override;
+    void releaseResources() override                                   {}
 
-   #ifndef JucePlugin_PreferredChannelConfigurations
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
-   #endif
 
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
-    using juce::AudioProcessor::processBlock; // version double
+    void processBlock (juce::AudioBuffer<double>&, juce::MidiBuffer&) override;
 
-    // Editor
-    bool hasEditor() const override { return true; }
+    //==============================================================================
+    // Éditeur
+    bool hasEditor() const override                                    { return true; }
     juce::AudioProcessorEditor* createEditor() override;
 
-    // State
+    //==============================================================================
+    // État
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
-    // Accès params/meters
-    juce::AudioProcessorValueTreeState&       getValueTreeState()       noexcept { return apvts; }
-    const juce::AudioProcessorValueTreeState& getValueTreeState() const noexcept { return apvts; }
-    float getInputLevel()  const noexcept { return inLevel.load (std::memory_order_relaxed); }
-    float getOutputLevel() const noexcept { return outLevel.load (std::memory_order_relaxed); }
+    //==============================================================================
+    // Paramètres exposés à l'UI
+    juce::AudioProcessorValueTreeState parameters;
+
+    // Accès mètres lissés pour l'éditeur
+    float getInLevel()  const noexcept { return inLevel;  }
+    float getOutLevel() const noexcept { return outLevel; }
+
+    // Fabrique de layout des paramètres
+    static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
 private:
-    // Paramètres (APVTS: "inTrim", "outVol", "bypass", "midiChan")
-    juce::AudioProcessorValueTreeState apvts;
-    juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+    // Lissage mètres (exp)
+    double sr = 48000.0;
+    float  inLevel  = 0.0f;
+    float  outLevel = 0.0f;
 
-    // Smoothing linéaire 0..1 (IN / OUT / WET)
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> preSmoothed;   // IN
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> postSmoothed;  // OUT
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> wetSmoothed;   // bypass→wet
-    float  lastSampleRate { 44100.0f };
+    // Cache pointeur sur le paramètre "gain" (0..1)
+    std::atomic<float>* gainParam = nullptr;
 
-    // Meters
-    float  meterIn  { 0.0f };
-    float  meterOut { 0.0f };
-    double meterAttack  { 0.0 };
-    double meterRelease { 0.0 };
-
-    // UI thread-safe
-    std::atomic<float> inLevel  { 0.0f };
-    std::atomic<float> outLevel { 0.0f };
-
-    // Crossfade dry/wet
-    juce::AudioBuffer<float> dryBuffer;
+    // Mesure moyenne absolue par bloc
+    template <typename Sample>
+    void processBlockT (juce::AudioBuffer<Sample>&, juce::MidiBuffer&);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PluginAudioProcessor)
 };
-
-// Factory
-juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter();
